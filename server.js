@@ -30,7 +30,7 @@ var last_longitude = 0;
 var initial = true;
 var waypoints = [];
 var flying = false;
-var turning_threshold = 20;
+var turning_threshold = 30;
 var forward_threshold = 24; // 2 feet
 var max_height = 84; // 7 feet
 var min_height = 24; // 2 feet
@@ -40,6 +40,9 @@ var max_counter = 20;
 var going_up = false;
 var going_down = false;
 var up_counter = 0;
+var dest_threshold = 0.00001;
+var running = true;
+var takeoff_counter = 0;
 
 ON_DEATH(function(signal, err)
 {
@@ -52,7 +55,7 @@ ON_DEATH(function(signal, err)
 drone.on("PositionChanged", function(data) {
          latitude = data.latitude;
          longitude = data.longitude;
-    console.log("Location: " + data.latitude + ", " + data.longitude);
+
 });
 
 function get_bearing(currLat, currLong, destLat, destLong)
@@ -69,23 +72,31 @@ function get_bearing(currLat, currLong, destLat, destLong)
 
     var bearing = (Math.atan2(x, y) * 180) / Math.PI;
 
-    if (bearing > 180)
+    if (bearing < -180)
         bearing -= 360;
+    console.log("Bearing is " + bearing);
 
     return (bearing);
 }
 
 function get_heading(mag)
 {
-    var heading = ((Math.atan2(mag.y, mag.x) * 180) / Math.PI) - heading_offset;
+    var heading = ((Math.atan2(mag.y, mag.x) * 180) / Math.PI);
+    console.log("Heading before offset: " + heading);
+
+    heading -= heading_offset;
+    if (heading < -180)
+        heading += 360;
+    if (heading >= 180)
+        heading -= 360;
     return heading;
 }
 
 function get_waypoints(latitude, longitude)
 {
-    var waypoints = [[latitude + 0.0001, longitude],
-                     [latitude + 0.0001, longitude + 0.0001],
-                     [latitude, longitude + 0.0001],
+    var waypoints = [[latitude + 0.00005, longitude],
+                     [latitude + 0.00005, longitude + 0.00005],
+                     [latitude, longitude + 0.00005],
                      [latitude, longitude]];
     return waypoints;
 }
@@ -98,6 +109,13 @@ app.post('/api', function(req, res) {
     var forward = req.body.forward;
     var altitude = req.body.bottom;
     var mag = req.body.mag;
+
+    takeoff_counter++;
+
+    if (!running)
+    {
+        return;
+    }
 
     if (latitude == 500)
     {
@@ -127,15 +145,15 @@ app.post('/api', function(req, res) {
         var dest_long = waypoints[cur_wp][1];
         var bearing = get_bearing(latitude, longitude, dest_lat, dest_long);
 
-        if (altitude > 12)
-        {
+        if (takeoff_counter > 10)
             flying = true;
-        }
 
         if (!flying)
         {
             console.log("Taking off");
-            //drone.takeOff();
+            drone.takeOff();
+            takeoff_counter++;
+            return;
         }
 
         console.log("Location: " + latitude + ", " + longitude);
@@ -145,21 +163,20 @@ app.post('/api', function(req, res) {
         if (bearing - heading >= turning_threshold)
         {
             console.log("Turning clockwise");
-            //drone.clockwise(10);
+            drone.clockwise(35);
             setTimeout(function() {
                 drone.stop();
-            }, 1000);
+            }, 500);
         }
 
         if (bearing - heading <= -turning_threshold)
         {
             console.log("Turning counter-clockwise");
-            //drone.counterClockwise(10);
-                setTimeout(function() {
+            drone.counterClockwise(35);
+            setTimeout(function() {
                 drone.stop();
-            }, 1000);
+            }, 500);
         }
-
 
         if (Math.abs(bearing - heading) < turning_threshold)
         {
@@ -184,61 +201,63 @@ app.post('/api', function(req, res) {
             //}
             //else
             //{
-                if (going_up)
-                {
-                    counter = 0;
-                }
+            //    if (going_up)
+            //    {
+            //        counter = 0;
+            //    }
 
-                if (!going_down)
-                {
+            //    if (!going_down)
+            //    {
                     console.log("Going straight");
-                    counter++;
-                    //drone.forward(20);
+            //        counter++;
+                    drone.forward(15);
                     setTimeout(function() {
                         drone.stop();
                     }, 1000);
-                }
+            //    }
            // }
         }
 
-        if (altitude < min_height)
-        {
-            console.log("Resetting counter");
-            counter = 0;
-        }
+        //if (altitude < min_height)
+        // {
+        //    console.log("Resetting counter");
+        //    counter = 0;
+        //}
 
-        if (counter > max_counter)
-        {
-            console.log("Max counter reached");
-            if (Math.abs(desired_height - altitude) > 6)
-            {
-                going_down = true;
-                console.log("Going down");
-                // drone.down(10);
-                setTimeout(function() {
-                    drone.stop();
-                }, 1000);
-            }
-            else
-            {
-                console.log("Desired height reached");
-                counter = 0;
-                going_down = false;
-            }
-        }
+        //if (counter > max_counter)
+        //{
+        //    console.log("Max counter reached");
+        //    if (Math.abs(desired_height - altitude) > 6)
+        //    {
+        //        going_down = true;
+        //        console.log("Going down");
+        //        // drone.down(10);
+        //        setTimeout(function() {
+        //            drone.stop();
+        //        }, 1000);
+        //    }
+        //    else
+        //    {
+        //        console.log("Desired height reached");
+        //        counter = 0;
+        //        going_down = false;
+        //    }
+        //}
 
-        if (Math.abs(latitude - dest_lat) < .00001 && Math.abs(longitude - dest_long) < .00001)
+        if (Math.abs(latitude - dest_lat) < dest_threshold && Math.abs(longitude - dest_long) < dest_threshold)
         {
             console.log("Waypoint reached");
+
             drone.land();
-            process.exit();
+            running = false;
+            //process.exit();
             //drone.stop();
-            cur_wp++;
-            if (cur_wp > waypoints.length)
-            {
-                console.log("Circuit complete -- landing");
-                // drone.land();
-            }
+            //cur_wp++;
+            //if (cur_wp > waypoints.length)
+            //{
+            //    console.log("Circuit complete -- landing");
+            //    // drone.land();
+            //}
         }
     }
 
